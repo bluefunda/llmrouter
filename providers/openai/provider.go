@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	llmrouter "github.com/bluefunda/llmrouter"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/packages/respjson"
 )
 
 // Presets contains default configurations for OpenAI-compatible providers
@@ -203,6 +205,36 @@ func (p *Provider) buildParams(req *llmrouter.Request) openai.ChatCompletionNewP
 	return params
 }
 
+// extraStringField reads a string-valued field out of ChoiceDelta's untyped
+// ExtraFields — used for provider-specific delta fields that aren't part of
+// OpenAI's own typed schema (e.g. Groq's "reasoning" field).
+//
+// Deliberately does NOT gate on field.Valid(): the apijson decoder only
+// marks an extra field "valid" when the struct declares a typed `,extras`
+// destination map to decode into. ChatCompletionChunkChoiceDelta has no such
+// field (only the metadata-only JSON.ExtraFields), so every untyped extra
+// field it captures is unconditionally stamped status=invalid regardless of
+// its actual content — Valid() would always be false here even for a
+// perfectly well-formed string value. Raw() is unaffected by that status
+// (it only special-cases the omitted case), so it's the correct signal to
+// use instead: empty means the key was never present, "null" means an
+// explicit JSON null, and everything else is real content.
+func extraStringField(extra map[string]respjson.Field, key string) (string, bool) {
+	field, ok := extra[key]
+	if !ok {
+		return "", false
+	}
+	raw := field.Raw()
+	if raw == "" || raw == "null" {
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		return "", false
+	}
+	return s, true
+}
+
 func (p *Provider) Complete(ctx context.Context, req *llmrouter.Request) (*llmrouter.Response, error) {
 	params := p.buildParams(req)
 
@@ -230,6 +262,18 @@ func (p *Provider) Stream(ctx context.Context, req *llmrouter.Request) (*llmrout
 
 		stream := p.client.Chat.Completions.NewStreaming(ctx, params)
 
+		// reasoningActive tracks whether we're currently inside a reasoning
+		// span for providers that expose one (bluefunda/cai-llm-router#325 —
+		// Groq's openai/gpt-oss-120b sends a non-standard "reasoning" delta
+		// field, undeclared in the OpenAI SDK's typed schema, so it only
+		// surfaces via ChoiceDelta.JSON.ExtraFields). There's no explicit
+		// start/stop marker in the OpenAI-compatible streaming protocol the
+		// way Anthropic has content_block_start/stop, so boundaries are
+		// inferred: reasoning begins on the first chunk that carries it, and
+		// ends the moment real content starts arriving (the model has
+		// finished reasoning and moved on to its answer).
+		reasoningActive := false
+
 		var lastChunk *openai.ChatCompletionChunk
 		for stream.Next() {
 			chunk := stream.Current()
@@ -238,7 +282,19 @@ func (p *Provider) Stream(ctx context.Context, req *llmrouter.Request) (*llmrout
 			if len(chunk.Choices) > 0 {
 				delta := chunk.Choices[0].Delta
 
+				if reasoningText, ok := extraStringField(delta.JSON.ExtraFields, "reasoning"); ok && reasoningText != "" {
+					if !reasoningActive {
+						reasoningActive = true
+						ch <- llmrouter.Event{Type: llmrouter.EventThinkingStart}
+					}
+					ch <- llmrouter.Event{Type: llmrouter.EventThinkingDelta, Content: reasoningText}
+				}
+
 				if delta.Content != "" {
+					if reasoningActive {
+						reasoningActive = false
+						ch <- llmrouter.Event{Type: llmrouter.EventThinkingStop}
+					}
 					ch <- llmrouter.Event{
 						Type:    llmrouter.EventContentDelta,
 						Content: delta.Content,
@@ -254,6 +310,10 @@ func (p *Provider) Stream(ctx context.Context, req *llmrouter.Request) (*llmrout
 					}
 				}
 			}
+		}
+
+		if reasoningActive {
+			ch <- llmrouter.Event{Type: llmrouter.EventThinkingStop}
 		}
 
 		if err := stream.Err(); err != nil {

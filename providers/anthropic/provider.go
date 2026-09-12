@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"os"
+	"strings"
 	"time"
 
 	llmrouter "github.com/bluefunda/llmrouter"
@@ -114,6 +115,17 @@ func (p *Provider) buildParams(req *llmrouter.Request) anthropic.MessageNewParam
 		params.ToolChoice = convertToolChoice(req.ToolChoice)
 	}
 
+	// Opt into visible, Anthropic-summarized reasoning (bluefunda/cai-llm-router#325).
+	// Skipped for legacy pre-thinking models ("claude-3-*"), which reject `thinking.type: "adaptive"`
+	// with a 400 error — a coarse guard, not a full per-model capability table.
+	if !strings.HasPrefix(params.Model, "claude-3-") {
+		params.Thinking = anthropic.ThinkingConfigParamUnion{
+			OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{
+				Display: anthropic.ThinkingConfigAdaptiveDisplaySummarized,
+			},
+		}
+	}
+
 	return params
 }
 
@@ -148,6 +160,7 @@ func (p *Provider) Stream(ctx context.Context, req *llmrouter.Request) (*llmrout
 		var currentToolID string
 		var currentToolName string
 		var toolArgsBuilder string
+		var thinkingActive bool
 		var inputTokens, outputTokens int64
 		var cacheCreationTokens, cacheReadTokens int64
 		var msgID string
@@ -175,6 +188,9 @@ func (p *Provider) Stream(ctx context.Context, req *llmrouter.Request) (*llmrout
 					currentToolID = cb.ID
 					currentToolName = cb.Name
 					toolArgsBuilder = ""
+				case anthropic.ThinkingBlock:
+					thinkingActive = true
+					ch <- llmrouter.Event{Type: llmrouter.EventThinkingStart, Index: e.Index}
 				}
 
 			case anthropic.ContentBlockDeltaEvent:
@@ -202,6 +218,12 @@ func (p *Provider) Stream(ctx context.Context, req *llmrouter.Request) (*llmrout
 							},
 						},
 					}
+				case anthropic.ThinkingDelta:
+					ch <- llmrouter.Event{
+						Type:    llmrouter.EventThinkingDelta,
+						Content: d.Thinking,
+						Index:   e.Index,
+					}
 				}
 
 			case anthropic.ContentBlockStopEvent:
@@ -217,6 +239,10 @@ func (p *Provider) Stream(ctx context.Context, req *llmrouter.Request) (*llmrout
 					currentToolID = ""
 					currentToolName = ""
 					toolArgsBuilder = ""
+				}
+				if thinkingActive {
+					thinkingActive = false
+					ch <- llmrouter.Event{Type: llmrouter.EventThinkingStop, Index: e.Index}
 				}
 
 			case anthropic.MessageDeltaEvent:
