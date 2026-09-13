@@ -198,6 +198,10 @@ type Event struct {
 	Delta    *Delta
 	Response *Response
 	Error    error
+	// Index is the provider's content-block index, set only on the Thinking*
+	// event types below — a stable id for one reasoning segment within the
+	// current turn (see bluefunda/cai-llm-router#325).
+	Index int64
 }
 
 // EventType represents the type of streaming event
@@ -206,6 +210,9 @@ type EventType int
 const (
 	EventContentDelta  EventType = iota // Text content chunk
 	EventToolCallDelta                  // Tool call chunk
+	EventThinkingStart                  // A new reasoning segment began (Index set)
+	EventThinkingDelta                  // Incremental reasoning text (Index + Content set)
+	EventThinkingStop                   // A reasoning segment finished (Index set)
 	EventDone                           // Stream completed
 	EventError                          // Error occurred
 )
