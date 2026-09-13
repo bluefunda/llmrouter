@@ -3,7 +3,7 @@ module github.com/bluefunda/llmrouter
 go 1.26.0
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.61.0
+	github.com/anthropics/anthropic-sdk-go v1.71.0
 	github.com/google/generative-ai-go v0.20.1
 	github.com/openai/openai-go v1.12.0
 	google.golang.org/api v0.291.0
