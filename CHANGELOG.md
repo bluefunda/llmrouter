@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/bluefunda/llmrouter/compare/v0.5.1...v0.6.0) (2026-09-13)
+
+
+### Features
+
+* surface real provider reasoning as Thinking* stream events ([#113](https://github.com/bluefunda/llmrouter/issues/113)) ([3652d24](https://github.com/bluefunda/llmrouter/commit/3652d24bff088158d5fb83553fe6c7d497547165))
+
 ## [0.5.1](https://github.com/bluefunda/llmrouter/compare/v0.5.0...v0.5.1) (2026-08-05)
 
 
