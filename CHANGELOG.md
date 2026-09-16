@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/bluefunda/llmrouter/compare/v0.6.0...v0.6.1) (2026-09-16)
+
+
+### Bug Fixes
+
+* **anthropic:** initialize tool_use input to {} instead of nil ([#117](https://github.com/bluefunda/llmrouter/issues/117)) ([2a386ab](https://github.com/bluefunda/llmrouter/commit/2a386ab3d91567318bcdc28d15c3533f51ae9e80))
+
 ## [0.6.0](https://github.com/bluefunda/llmrouter/compare/v0.5.1...v0.6.0) (2026-09-13)
 
 
