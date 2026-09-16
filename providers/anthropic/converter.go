@@ -77,8 +77,14 @@ func convertMessages(msgs []llmrouter.Message) ([]anthropic.MessageParam, []anth
 					blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
 				}
 				for _, tc := range msg.ToolCalls {
-					var input map[string]interface{}
-					_ = json.Unmarshal([]byte(tc.Function.Arguments), &input)
+					// Anthropic rejects a null `input` ("Input should be an
+					// object") — arguments come back empty for no-argument
+					// tool calls (e.g. github-mcp's get_me), which leaves the
+					// unmarshal target nil unless it starts as {}.
+					input := map[string]interface{}{}
+					if tc.Function.Arguments != "" {
+						_ = json.Unmarshal([]byte(tc.Function.Arguments), &input)
+					}
 					blocks = append(blocks, anthropic.NewToolUseBlock(tc.ID, input, tc.Function.Name))
 				}
 				messages = append(messages, anthropic.NewAssistantMessage(blocks...))
