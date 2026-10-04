@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/bluefunda/llmrouter/compare/v0.6.1...v0.6.2) (2026-10-04)
+
+
+### Bug Fixes
+
+* **anthropic:** honour CacheControl on assistant/tool messages and tools ([#125](https://github.com/bluefunda/llmrouter/issues/125)) ([cd57386](https://github.com/bluefunda/llmrouter/commit/cd573868ff07f5fd697a2e52e9f41c482f6bda3c))
+
 ## [0.6.1](https://github.com/bluefunda/llmrouter/compare/v0.6.0...v0.6.1) (2026-09-16)
 
 
