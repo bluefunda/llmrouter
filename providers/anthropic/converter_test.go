@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	llmrouter "github.com/bluefunda/llmrouter"
@@ -493,5 +494,90 @@ func TestWrapError_InvalidRequest(t *testing.T) {
 	wrapped := wrapError(makeAntError(http.StatusBadRequest))
 	if !errors.Is(wrapped, llmrouter.ErrInvalidRequest) {
 		t.Errorf("expected ErrInvalidRequest, got %v", wrapped)
+	}
+}
+
+// ---- cache control on assistant / tool messages and tools ----
+
+// cacheBreakpoints marshals v and returns the number of "cache_control" keys
+// found in the wire JSON.
+func cacheBreakpoints(t *testing.T, v any) int {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return strings.Count(string(b), `"cache_control":{"type":"ephemeral"}`)
+}
+
+func TestConvertMessages_AssistantTextWithCache(t *testing.T) {
+	eph := &llmrouter.CacheControl{Type: "ephemeral"}
+	msgs, _ := convertMessages([]llmrouter.Message{
+		{Role: llmrouter.RoleUser, Content: "hi"},
+		{Role: llmrouter.RoleAssistant, Content: "hello", CacheControl: eph},
+	})
+	if got := cacheBreakpoints(t, msgs[0]); got != 0 {
+		t.Errorf("user message: expected 0 breakpoints, got %d", got)
+	}
+	if got := cacheBreakpoints(t, msgs[1]); got != 1 {
+		t.Errorf("assistant message: expected 1 breakpoint, got %d", got)
+	}
+}
+
+func TestConvertMessages_AssistantWithoutCache(t *testing.T) {
+	msgs, _ := convertMessages([]llmrouter.Message{
+		{Role: llmrouter.RoleAssistant, Content: "hello"},
+	})
+	if got := cacheBreakpoints(t, msgs); got != 0 {
+		t.Errorf("expected 0 breakpoints, got %d", got)
+	}
+}
+
+func TestConvertMessages_AssistantToolCallsCacheOnLastBlock(t *testing.T) {
+	eph := &llmrouter.CacheControl{Type: "ephemeral"}
+	msgs, _ := convertMessages([]llmrouter.Message{{
+		Role:    llmrouter.RoleAssistant,
+		Content: "checking",
+		ToolCalls: []llmrouter.ToolCall{
+			{ID: "t1", Function: llmrouter.FuncCall{Name: "a", Arguments: `{}`}},
+			{ID: "t2", Function: llmrouter.FuncCall{Name: "b", Arguments: `{}`}},
+		},
+		CacheControl: eph,
+	}})
+	blocks := msgs[0].Content
+	if len(blocks) != 3 {
+		t.Fatalf("expected 3 blocks, got %d", len(blocks))
+	}
+	for i, want := range []int{0, 0, 1} {
+		if got := cacheBreakpoints(t, blocks[i]); got != want {
+			t.Errorf("block %d: expected %d breakpoints, got %d", i, want, got)
+		}
+	}
+}
+
+func TestConvertMessages_ToolResultWithCache(t *testing.T) {
+	eph := &llmrouter.CacheControl{Type: "ephemeral"}
+	msgs, _ := convertMessages([]llmrouter.Message{
+		{Role: llmrouter.RoleTool, ToolCallID: "t1", Content: "r1"},
+		{Role: llmrouter.RoleTool, ToolCallID: "t2", Content: "r2", CacheControl: eph},
+	})
+	if got := cacheBreakpoints(t, msgs[0]); got != 0 {
+		t.Errorf("first tool result: expected 0 breakpoints, got %d", got)
+	}
+	if got := cacheBreakpoints(t, msgs[1]); got != 1 {
+		t.Errorf("second tool result: expected 1 breakpoint, got %d", got)
+	}
+}
+
+func TestConvertTools_CacheControl(t *testing.T) {
+	tools := convertTools([]llmrouter.Tool{
+		{Type: "function", Function: llmrouter.Function{Name: "a"}},
+		{Type: "function", Function: llmrouter.Function{Name: "b"}, CacheControl: &llmrouter.CacheControl{Type: "ephemeral"}},
+	})
+	if got := cacheBreakpoints(t, tools[0]); got != 0 {
+		t.Errorf("first tool: expected 0 breakpoints, got %d", got)
+	}
+	if got := cacheBreakpoints(t, tools[1]); got != 1 {
+		t.Errorf("last tool: expected 1 breakpoint, got %d", got)
 	}
 }

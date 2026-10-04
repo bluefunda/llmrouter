@@ -71,8 +71,8 @@ func convertMessages(msgs []llmrouter.Message) ([]anthropic.MessageParam, []anth
 			}
 
 		case llmrouter.RoleAssistant:
+			var blocks []anthropic.ContentBlockParamUnion
 			if len(msg.ToolCalls) > 0 {
-				blocks := []anthropic.ContentBlockParamUnion{}
 				if msg.Content != "" {
 					blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
 				}
@@ -87,21 +87,39 @@ func convertMessages(msgs []llmrouter.Message) ([]anthropic.MessageParam, []anth
 					}
 					blocks = append(blocks, anthropic.NewToolUseBlock(tc.ID, input, tc.Function.Name))
 				}
-				messages = append(messages, anthropic.NewAssistantMessage(blocks...))
 			} else {
-				messages = append(messages, anthropic.NewAssistantMessage(
-					anthropic.NewTextBlock(msg.Content),
-				))
+				blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
 			}
+			// A breakpoint on the last block caches everything up to and
+			// including this assistant turn.
+			if msg.CacheControl != nil {
+				setBlockCacheControl(&blocks[len(blocks)-1])
+			}
+			messages = append(messages, anthropic.NewAssistantMessage(blocks...))
 
 		case llmrouter.RoleTool:
-			messages = append(messages, anthropic.NewUserMessage(
-				anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, false),
-			))
+			block := anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, false)
+			if msg.CacheControl != nil {
+				setBlockCacheControl(&block)
+			}
+			messages = append(messages, anthropic.NewUserMessage(block))
 		}
 	}
 
 	return messages, systemBlocks
+}
+
+// setBlockCacheControl sets an ephemeral cache breakpoint on a text, tool_use
+// or tool_result block. Other block types are left untouched.
+func setBlockCacheControl(b *anthropic.ContentBlockParamUnion) {
+	switch {
+	case b.OfText != nil:
+		b.OfText.CacheControl = anthropic.NewCacheControlEphemeralParam()
+	case b.OfToolUse != nil:
+		b.OfToolUse.CacheControl = anthropic.NewCacheControlEphemeralParam()
+	case b.OfToolResult != nil:
+		b.OfToolResult.CacheControl = anthropic.NewCacheControlEphemeralParam()
+	}
 }
 
 // convertTools converts llmrouter tools to Anthropic format
@@ -127,6 +145,9 @@ func convertTools(tools []llmrouter.Tool) []anthropic.ToolUnionParam {
 		t := anthropic.ToolUnionParamOfTool(schema, tool.Function.Name)
 		if tool.Function.Description != "" {
 			t.OfTool.Description = anthropic.String(tool.Function.Description)
+		}
+		if tool.CacheControl != nil {
+			t.OfTool.CacheControl = anthropic.NewCacheControlEphemeralParam()
 		}
 		result[i] = t
 	}
