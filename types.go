@@ -102,7 +102,10 @@ type Message struct {
 	ToolCalls    []ToolCall    `json:"tool_calls,omitempty"`
 	ToolCallID   string        `json:"tool_call_id,omitempty"`
 	// CacheControl marks this message's content for prompt caching (Anthropic only).
-	// For user messages with ContentParts, set CacheControl on individual parts instead.
+	// It places a cache breakpoint on the message's last content block, so
+	// everything up to and including this message is cached. Honoured for system,
+	// user, assistant and tool messages. For user messages with ContentParts,
+	// set CacheControl on individual parts instead.
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
@@ -221,6 +224,9 @@ const (
 type Tool struct {
 	Type     string   `json:"type"`
 	Function Function `json:"function"`
+	// CacheControl places a prompt-cache breakpoint on this tool (Anthropic only).
+	// Set it on the last tool to cache the whole tools array.
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 // Function represents a function definition
