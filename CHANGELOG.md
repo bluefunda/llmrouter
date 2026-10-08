@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.4](https://github.com/bluefunda/llmrouter/compare/v0.6.3...v0.6.4) (2026-10-08)
+
+
+### Bug Fixes
+
+* **gemini:** make generated tool-call IDs unique across tool rounds ([#129](https://github.com/bluefunda/llmrouter/issues/129)) ([f6e7734](https://github.com/bluefunda/llmrouter/commit/f6e773474ce764637be52f6f2e7d681e213edac6))
+
 ## [0.6.3](https://github.com/bluefunda/llmrouter/compare/v0.6.2...v0.6.3) (2026-10-08)
 
 
