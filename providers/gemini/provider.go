@@ -2,16 +2,19 @@ package gemini
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"time"
 
 	llmrouter "github.com/bluefunda/llmrouter"
-	"github.com/google/generative-ai-go/genai"
-	"google.golang.org/api/iterator"
-	"google.golang.org/api/option"
+	"google.golang.org/genai"
 )
 
-// Provider handles Google Gemini API
+// Provider handles the Google Gemini API through the official google.golang.org/genai SDK.
+//
+// It replaced github.com/google/generative-ai-go, which Google deprecated and which can no
+// longer parse Gemini 3.x streams: every stream ended in "invalid character ']'", and
+// function-calling turns came back as an unknown finish reason with no content.
 type Provider struct {
 	client *genai.Client
 	model  string
@@ -20,19 +23,18 @@ type Provider struct {
 
 // DefaultModels is the list of available Gemini models
 var DefaultModels = []string{
-	"gemini-1.5-pro",
-	"gemini-1.5-flash",
-	"gemini-2.0-flash-exp",
-	"gemini-1.0-pro",
+	"gemini-3.5-flash",
+	"gemini-3.5-flash-lite",
 }
 
 // New creates a new Gemini provider.
-// The Gemini SDK requires a context for client construction; context.Background()
-// is used internally so the provider lifetime is not tied to a caller's context.
+// The SDK takes a context for client construction; context.Background() is used so the
+// provider lifetime is not tied to a caller's context. cfg.BaseURL overrides the API
+// endpoint (used by tests); cfg.CustomHeaders are sent on every request.
 func New(cfg llmrouter.ProviderConfig) (*Provider, error) {
 	model := cfg.Model
 	if model == "" {
-		model = "gemini-1.5-flash"
+		model = "gemini-3.5-flash-lite"
 	}
 
 	models := cfg.Models
@@ -40,12 +42,21 @@ func New(cfg llmrouter.ProviderConfig) (*Provider, error) {
 		models = DefaultModels
 	}
 
-	opts := []option.ClientOption{}
-	if cfg.APIKey != "" {
-		opts = append(opts, option.WithAPIKey(cfg.APIKey))
+	cc := &genai.ClientConfig{
+		APIKey:  cfg.APIKey,
+		Backend: genai.BackendGeminiAPI,
+	}
+	if cfg.BaseURL != "" {
+		cc.HTTPOptions.BaseURL = cfg.BaseURL
+	}
+	if len(cfg.CustomHeaders) > 0 {
+		cc.HTTPOptions.Headers = http.Header{}
+		for key, value := range cfg.CustomHeaders {
+			cc.HTTPOptions.Headers.Set(key, value)
+		}
 	}
 
-	client, err := genai.NewClient(context.Background(), opts...)
+	client, err := genai.NewClient(context.Background(), cc)
 	if err != nil {
 		return nil, err
 	}
@@ -64,9 +75,9 @@ func NewFromEnv() (*Provider, error) {
 	})
 }
 
-// Close closes the Gemini client
+// Close releases the provider. The genai client holds no resources that need closing.
 func (p *Provider) Close() error {
-	return p.client.Close()
+	return nil
 }
 
 func (p *Provider) Name() string {
@@ -79,47 +90,32 @@ func (p *Provider) Models() []string {
 	return out
 }
 
+func (p *Provider) modelName(req *llmrouter.Request) string {
+	if req.Model != "" {
+		return req.Model
+	}
+	return p.model
+}
+
 func (p *Provider) Complete(ctx context.Context, req *llmrouter.Request) (*llmrouter.Response, error) {
-	modelName := req.Model
-	if modelName == "" {
-		modelName = p.model
-	}
+	modelName := p.modelName(req)
+	contents, config := buildRequest(req)
 
-	model := p.client.GenerativeModel(modelName)
-	configureModel(model, req)
-
-	if len(req.Tools) > 0 {
-		model.Tools = convertTools(req.Tools)
-	}
-
-	chat := model.StartChat()
-	history, lastParts := convertHistory(req.Messages)
-	chat.History = history
-
-	resp, err := chat.SendMessage(ctx, lastParts...)
+	resp, err := p.client.Models.GenerateContent(ctx, modelName, contents, config)
 	if err != nil {
 		return nil, wrapError(err)
 	}
 
-	return convertResponse(resp, modelName, p.Name()), nil
+	acc := newAccumulator()
+	if err := acc.add(resp, func(llmrouter.Event) {}); err != nil {
+		return nil, err
+	}
+	return acc.response(modelName, p.Name()), nil
 }
 
 func (p *Provider) Stream(ctx context.Context, req *llmrouter.Request) (*llmrouter.StreamResult, error) {
-	modelName := req.Model
-	if modelName == "" {
-		modelName = p.model
-	}
-
-	model := p.client.GenerativeModel(modelName)
-	configureModel(model, req)
-
-	if len(req.Tools) > 0 {
-		model.Tools = convertTools(req.Tools)
-	}
-
-	chat := model.StartChat()
-	history, lastParts := convertHistory(req.Messages)
-	chat.History = history
+	modelName := p.modelName(req)
+	contents, config := buildRequest(req)
 
 	ctx, cancel := context.WithCancel(ctx)
 	ch := make(chan llmrouter.Event)
@@ -130,115 +126,78 @@ func (p *Provider) Stream(ctx context.Context, req *llmrouter.Request) (*llmrout
 		defer close(ch)
 		defer cancel()
 
-		iter := chat.SendMessageStream(ctx, lastParts...)
-
-		var fullContent string
-		var toolCalls []llmrouter.ToolCall
-
-		for {
-			resp, err := iter.Next()
-			if err == iterator.Done {
-				break
+		emit := func(ev llmrouter.Event) {
+			select {
+			case ch <- ev:
+			case <-ctx.Done():
 			}
+		}
+
+		acc := newAccumulator()
+		for resp, err := range p.client.Models.GenerateContentStream(ctx, modelName, contents, config) {
 			if err != nil {
-				ch <- llmrouter.Event{
-					Type:  llmrouter.EventError,
-					Error: wrapError(err),
-				}
+				emit(llmrouter.Event{Type: llmrouter.EventError, Error: wrapError(err)})
 				return
 			}
-
-			for _, candidate := range resp.Candidates {
-				if candidate.Content == nil {
-					continue
-				}
-				for _, part := range candidate.Content.Parts {
-					switch p := part.(type) {
-					case genai.Text:
-						content := string(p)
-						fullContent += content
-						ch <- llmrouter.Event{
-							Type:    llmrouter.EventContentDelta,
-							Content: content,
-						}
-					case genai.FunctionCall:
-						args, _ := convertFunctionCallArgs(p.Args)
-						tc := llmrouter.ToolCall{
-							ID:   p.Name,
-							Type: "function",
-							Function: llmrouter.FuncCall{
-								Name:      p.Name,
-								Arguments: args,
-							},
-						}
-						toolCalls = append(toolCalls, tc)
-						ch <- llmrouter.Event{
-							Type: llmrouter.EventToolCallDelta,
-							Delta: &llmrouter.Delta{
-								ToolCalls: []llmrouter.ToolCall{tc},
-							},
-						}
-					}
-				}
+			if err := acc.add(resp, emit); err != nil {
+				emit(llmrouter.Event{Type: llmrouter.EventError, Error: err})
+				return
 			}
 		}
-
-		finishReason := "stop"
-		if len(toolCalls) > 0 {
-			finishReason = "tool_calls"
-		}
-
-		ch <- llmrouter.Event{
-			Type: llmrouter.EventDone,
-			Response: &llmrouter.Response{
-				Model:    modelName,
-				Provider: p.Name(),
-				Object:   "chat.completion",
-				Created:  time.Now().Unix(),
-				Choices: []llmrouter.Choice{
-					{
-						Index: 0,
-						Message: &llmrouter.Message{
-							Role:      llmrouter.RoleAssistant,
-							Content:   fullContent,
-							ToolCalls: toolCalls,
-						},
-						FinishReason: finishReason,
-					},
-				},
-			},
-		}
+		emit(llmrouter.Event{
+			Type:     llmrouter.EventDone,
+			Response: acc.response(modelName, p.Name()),
+		})
 	}()
 
 	return res, nil
 }
 
-func configureModel(model *genai.GenerativeModel, req *llmrouter.Request) {
-	if req.Temperature != nil {
-		temp := float32(*req.Temperature)
-		model.Temperature = &temp
+// buildRequest converts an llmrouter request into Gemini contents and generation config.
+func buildRequest(req *llmrouter.Request) ([]*genai.Content, *genai.GenerateContentConfig) {
+	toolsDeclared := len(req.Tools) > 0
+	contents, system := convertMessages(req.Messages, toolsDeclared)
+
+	config := &genai.GenerateContentConfig{
+		SystemInstruction: system,
+		MaxOutputTokens:   16384,
+		StopSequences:     req.Stop,
 	}
 	if req.MaxTokens != nil {
-		tokens := int32(*req.MaxTokens)
-		model.MaxOutputTokens = &tokens
-	} else {
-		tokens := int32(16384)
-		model.MaxOutputTokens = &tokens
+		config.MaxOutputTokens = int32(*req.MaxTokens)
+	}
+	if req.Temperature != nil {
+		temp := float32(*req.Temperature)
+		config.Temperature = &temp
 	}
 	if req.TopP != nil {
 		topP := float32(*req.TopP)
-		model.TopP = &topP
+		config.TopP = &topP
 	}
-	if len(req.Stop) > 0 {
-		model.StopSequences = req.Stop
+	if toolsDeclared {
+		config.Tools = convertTools(req.Tools)
 	}
+	return contents, config
+}
 
-	for _, msg := range req.Messages {
-		if msg.Role == llmrouter.RoleSystem {
-			model.SystemInstruction = &genai.Content{
-				Parts: []genai.Part{genai.Text(msg.Content)},
-			}
-			break
-		}
+// response builds the final OpenAI-compatible response once the stream ends.
+func (a *accumulator) response(model, provider string) *llmrouter.Response {
+	return &llmrouter.Response{
+		Model:    model,
+		Provider: provider,
+		Object:   "chat.completion",
+		Created:  time.Now().Unix(),
+		Choices: []llmrouter.Choice{
+			{
+				Index: 0,
+				Message: &llmrouter.Message{
+					Role:      llmrouter.RoleAssistant,
+					Content:   a.content.String(),
+					ToolCalls: a.toolCalls,
+				},
+				FinishReason: a.finishReason(),
+			},
+		},
+		Usage: a.usage(),
 	}
 }

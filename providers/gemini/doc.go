@@ -1,15 +1,15 @@
 // Package gemini implements the llmrouter.Provider interface for Google
-// Gemini models using the official Google Generative AI Go SDK.
+// Gemini models using the official Google Gen AI Go SDK (google.golang.org/genai).
 //
-// Gemini requires a context during initialisation:
+// Create a provider from the GEMINI_API_KEY environment variable:
 //
-//	p, err := gemini.NewFromEnv(ctx) // reads GEMINI_API_KEY
+//	p, err := gemini.NewFromEnv()
 //
 // Or with an explicit key:
 //
-//	p, err := gemini.New(ctx, gemini.Config{APIKey: "..."})
+//	p, err := gemini.New(llmrouter.ProviderConfig{APIKey: "..."})
 //
-// Supported models include gemini-2.0-flash, gemini-1.5-pro, and
-// gemini-1.5-flash. The provider supports streaming, tool calling,
-// and multimodal inputs (text + images + documents).
+// The provider supports streaming, tool calling (including Gemini 3 thought
+// signatures, carried on llmrouter.ToolCall.ThoughtSignature), and text and
+// image inputs.
 package gemini
