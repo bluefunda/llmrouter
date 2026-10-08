@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.3](https://github.com/bluefunda/llmrouter/compare/v0.6.2...v0.6.3) (2026-10-08)
+
+
+### Bug Fixes
+
+* **gemini:** migrate to google.golang.org/genai SDK ([#127](https://github.com/bluefunda/llmrouter/issues/127)) ([46e15e7](https://github.com/bluefunda/llmrouter/commit/46e15e7277171d6450bf823c297c8fa4e83c63a3))
+
 ## [0.6.2](https://github.com/bluefunda/llmrouter/compare/v0.6.1...v0.6.2) (2026-10-04)
 
 
