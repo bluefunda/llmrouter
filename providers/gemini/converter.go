@@ -1,11 +1,14 @@
 package gemini
 
 import (
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	llmrouter "github.com/bluefunda/llmrouter"
 	"google.golang.org/genai"
@@ -231,15 +234,16 @@ func (a *accumulator) add(resp *genai.GenerateContentResponse, emit func(llmrout
 	return nil
 }
 
-// addToolCall records a function call. Each call gets a unique ID and Index even when Gemini
-// omits an ID: the old provider used the function name as the ID, so two parallel calls to the
-// same tool collided and were merged into one.
+// addToolCall records a function call. Each call gets an ID that is unique across the whole
+// conversation even when Gemini omits one: callers key per-call state on it (cai-llm-router's
+// thinking-card steps), and a per-response counter like "call_0_fetch" repeats on every tool
+// round, so a later round's call overwrote the earlier one.
 func (a *accumulator) addToolCall(part *genai.Part) llmrouter.ToolCall {
 	fc := part.FunctionCall
 	index := len(a.toolCalls)
 	id := fc.ID
 	if id == "" {
-		id = fmt.Sprintf("call_%d_%s", index, fc.Name)
+		id = newCallID()
 	}
 	args := "{}"
 	if len(fc.Args) > 0 {
@@ -303,4 +307,13 @@ func wrapError(err error) error {
 		apiErr.Message = gErr.Message
 	}
 	return apiErr
+}
+
+// newCallID returns a random tool-call ID ("call_" + 24 hex chars), the same shape as OpenAI's.
+func newCallID() string {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("call_%x", time.Now().UnixNano())
+	}
+	return "call_" + hex.EncodeToString(b[:])
 }

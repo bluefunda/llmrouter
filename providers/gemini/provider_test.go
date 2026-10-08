@@ -360,3 +360,45 @@ func jsonPath(v any, path ...any) any {
 }
 
 func genaiFinish(s string) genai.FinishReason { return genai.FinishReason(s) }
+
+// Each tool round is a separate response. A per-response counter gave the first call of every
+// round the same ID ("call_0_fetch"), so cai-llm-router's step for a later round overwrote the
+// earlier one (duplicated "Reviewing the results" rows, 0.0s timers). IDs must not repeat.
+func TestStream_CallIDsAreUniqueAcrossToolRounds(t *testing.T) {
+	f := newFakeGemini(t, http.StatusOK, "",
+		`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"fetch","args":{"url":"https://a.example"}}}]},"finishReason":"STOP"}]}`,
+	)
+	p := f.provider(t)
+
+	seen := map[string]bool{}
+	for round := 0; round < 3; round++ {
+		for _, ev := range collect(t, p, userRequest("Fetch it")) {
+			if ev.Type != llmrouter.EventToolCallDelta {
+				continue
+			}
+			id := ev.Delta.ToolCalls[0].ID
+			if !strings.HasPrefix(id, "call_") || len(id) != len("call_")+24 {
+				t.Fatalf("round %d: ID %q, want call_ + 24 hex chars", round, id)
+			}
+			if seen[id] {
+				t.Fatalf("round %d reused tool-call ID %q", round, id)
+			}
+			seen[id] = true
+		}
+	}
+	if len(seen) != 3 {
+		t.Fatalf("got %d distinct IDs over 3 rounds, want 3", len(seen))
+	}
+}
+
+// When Gemini does send its own call ID, it is kept as-is.
+func TestStream_KeepsGeminiProvidedCallID(t *testing.T) {
+	f := newFakeGemini(t, http.StatusOK, "",
+		`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"gem-123","name":"fetch","args":{}}}]},"finishReason":"STOP"}]}`,
+	)
+	for _, ev := range collect(t, f.provider(t), userRequest("Fetch it")) {
+		if ev.Type == llmrouter.EventToolCallDelta && ev.Delta.ToolCalls[0].ID != "gem-123" {
+			t.Fatalf("ID = %q, want Gemini's gem-123", ev.Delta.ToolCalls[0].ID)
+		}
+	}
+}
